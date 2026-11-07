@@ -59,9 +59,13 @@ function foundText(found) {
   return parts.length ? `가린 것: ${parts.join(' · ')}` : '가린 것 없음';
 }
 
-// 긴급도에서 criteria.json 의 첫 단계(가장 급한 것)만 빨갛게
-function isMostUrgent(value) {
-  return labelsOf(state.criteria).긴급도[0] === value;
+// 빨갛게 보일 값 — criteria.json 의 긴급도 첫 단계(가장 급한 것: 높음)와 감정 마지막 단계(부정)
+const ALERT_TEXT = '경고 메시지: 긴급상황 발생 — 즉시 처리 요망';
+function isAlarming(dim, value) {
+  const labels = labelsOf(state.criteria);
+  if (dim === '긴급도') return labels.긴급도[0] === value;
+  if (dim === '감정') return labels.감정.at(-1) === value;
+  return false;
 }
 
 function pct(n, total) {
@@ -175,11 +179,15 @@ function ruleVerdict(r) {
 }
 
 function appendVerdict(box, v) {
+  // 긴급도 높음 + 감정 부정이 함께면 경고 메시지
+  if (isAlarming('긴급도', v.긴급도) && isAlarming('감정', v.감정)) {
+    box.append(el('p', { class: 'alert', role: 'alert' }, ALERT_TEXT));
+  }
   box.append(
     el('div', { class: 'badges' },
       DIMS.map((d) => {
         const cls = ['badge'];
-        if (d === '긴급도' && isMostUrgent(v[d])) cls.push('urgent');
+        if (isAlarming(d, v[d])) cls.push('urgent');
         if (v.기본값?.includes(d)) cls.push('fallback');
         return el('div', { class: cls.join(' ') },
           el('span', { class: 'k' }, d),

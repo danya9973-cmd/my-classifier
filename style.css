@@ -328,3 +328,19 @@ table.compare td.down { color: var(--danger); font-weight: 700; }
 }
 .switch-btn.stop { background: transparent; color: var(--muted); border: 1px solid var(--border); width: 100%; }
 .pause { margin-top: 12px; }
+
+/* 긴급도 높음 + 감정 부정 경고 */
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--danger);
+  color: var(--surface);
+  font-weight: 700;
+  font-size: 1rem;
+  line-height: 1.4;
+}
+.alert::before { content: "⚠"; font-size: 1.1rem; line-height: 1.25; }
