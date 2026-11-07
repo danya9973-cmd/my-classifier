@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+.vercel/
+__pycache__/
+.DS_Store
+합성데이터_만들기.html

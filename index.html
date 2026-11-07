@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>고객 문의 분류기</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <h1>고객 문의 분류기</h1>
+    <p class="sub">AI(Gemini)로 가르고, 실패하면 규칙으로 가릅니다</p>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="화면 고르기">
+    <button type="button" role="tab" id="tab-classify" aria-controls="panel-classify" aria-selected="true">분류</button>
+    <button type="button" role="tab" id="tab-grade" aria-controls="panel-grade" aria-selected="false">채점</button>
+  </nav>
+
+  <main>
+    <p id="load-error" class="error" hidden></p>
+
+    <section id="panel-classify" role="tabpanel" aria-labelledby="tab-classify">
+      <form id="classify-form" class="card">
+        <label for="sentence" class="label">고객 문장 한 줄</label>
+        <textarea id="sentence" rows="3" placeholder="고객이 보낸 문장을 붙여 넣으세요"></textarea>
+        <p class="hint">이름 · 연락처 · 생년월일 · 전화번호 · 사번은 이 브라우저 안에서 가린 뒤, 가린 문장만 AI(Gemini)에 보냅니다. AI가 실패하면 규칙으로 가릅니다. 넣은 문장은 저장하지 않습니다.</p>
+        <button type="submit" class="primary" id="classify-btn" disabled>분류하기</button>
+      </form>
+      <div id="classify-result" class="card" hidden aria-live="polite"></div>
+    </section>
+
+    <section id="panel-grade" role="tabpanel" aria-labelledby="tab-grade" hidden>
+      <div class="card">
+        <p class="hint" id="grade-intro">내가 정답을 붙인 문장(data/answer.json)을 하나씩 가린 뒤 판정하고, 정답과 견줍니다. AI로 채점할 때는 가린 문장만 Gemini에 보냅니다.</p>
+        <div class="btn-row">
+          <button type="button" class="primary" id="grade-btn" disabled>규칙으로 채점</button>
+          <button type="button" class="primary alt" id="ai-grade-btn" disabled>AI로 채점</button>
+        </div>
+        <p id="ai-progress" class="progress" hidden aria-live="polite"></p>
+      </div>
+      <div id="ai-grade-result" hidden></div>
+      <div id="grade-result" hidden aria-live="polite"></div>
+    </section>
+  </main>
+
+  <footer id="footer" class="footer"></footer>
+</body>
+</html>
