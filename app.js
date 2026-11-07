@@ -13,6 +13,7 @@ const MODEL_KEY = 'my-classifier:model'; // 고른 모델을 이 브라우저에
 const $ = (id) => document.getElementById(id);
 const state = {
   criteria: null, keywords: null, answer: null, lastAI: null,
+  fresh: null, lastFresh: null, // 새 문장(data/fresh.json) 채점용 — answer.json 과 따로 둔다
   models: [],          // [{id, 이름, 설명}]
   model: null,         // 지금 고른 모델 id
   busy: new Map(),     // 붐빈다고 답한 모델 id → 시각 (화면에 «붐빔» 표시)
@@ -22,6 +23,12 @@ async function loadJSON(path) {
   const res = await fetch(path, { cache: 'no-store' });
   if (!res.ok) throw new Error(`${path} 를 읽지 못했습니다 (${res.status})`);
   return res.json();
+}
+
+async function ensureFresh() {
+  // 새 문장(fresh.json)은 «새 문장 채점»을 누를 때만 연다
+  if (!state.fresh) state.fresh = await loadJSON('data/fresh.json');
+  return state.fresh;
 }
 
 async function ensureAnswer() {
@@ -349,6 +356,7 @@ function splitInto(arr, parts) {
 function setGradeButtons(enabled) {
   $('grade-btn').disabled = !enabled;
   $('ai-grade-btn').disabled = !enabled;
+  $('fresh-grade-btn').disabled = !enabled;
 }
 
 // AI 채점 중 모델이 붐비면 멈추고 고르게 한다 → 고른 모델 id, 또는 null(여기서 끝내기)
@@ -380,18 +388,42 @@ function downloadJSON(obj, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function onGradeAI() {
-  const btn = $('ai-grade-btn');
+// 채점할 묶음마다 다른 것 — answer.json 과 fresh.json 이 같은 채점 흐름을 쓴다
+const GRADE_SETS = {
+  answer: {
+    btnId: 'ai-grade-btn', btnText: 'AI로 채점', outId: 'ai-grade-result',
+    load: () => ensureAnswer(), batches: AI_BATCHES, lastKey: 'lastAI',
+    file: 'data/answer.json', title: 'AI 채점 — 규칙과 나란히', downloadName: DOWNLOAD_NAME,
+  },
+  fresh: {
+    btnId: 'fresh-grade-btn', btnText: '새 문장(fresh) 채점 — 규칙 · AI', outId: 'fresh-grade-result',
+    load: () => ensureFresh(), batches: 1, lastKey: 'lastFresh',
+    file: 'data/fresh.json', title: '새 문장(fresh.json) — 규칙과 AI', downloadName: 'fresh_채점결과.json',
+    showLabelBy: true, // 정답을 누가 붙였는지 함께 적는다 (fresh 는 AI 가 붙였다)
+  },
+};
+
+function labelByText(items) {
+  const n = new Map();
+  for (const it of items) n.set(it.label_by ?? '알 수 없음', (n.get(it.label_by ?? '알 수 없음') || 0) + 1);
+  return [...n].map(([k, v]) => `${k} ${v}문장`).join(' · ');
+}
+
+async function onGradeAI() { return runAIGrade(GRADE_SETS.answer); }
+async function onGradeFresh() { return runAIGrade(GRADE_SETS.fresh); }
+
+async function runAIGrade(cfg) {
+  const btn = $(cfg.btnId);
   const progress = $('ai-progress');
-  const out = $('ai-grade-result');
+  const out = $(cfg.outId);
   setGradeButtons(false);
   btn.textContent = 'AI 채점 중…';
   progress.hidden = false;
   try {
-    const items = await ensureAnswer();
+    const items = await cfg.load();
     const total = items.length;
     const masked = items.map((it) => maskText(it.text).text);
-    const batches = splitInto(items.map((_, i) => i), AI_BATCHES);
+    const batches = splitInto(items.map((_, i) => i), cfg.batches);
     const ai = new Array(total);
     const usedModel = new Array(total); // 문장마다 어느 모델이 갈랐는지
     let model = state.model;
@@ -456,28 +488,31 @@ async function onGradeAI() {
     // 두 번 잰 흔들림 — 직전 AI 채점과 판정이 달라진 문장
     // (둘 다 답을 받았고, 같은 모델이 가른 문장만 견준다 — 모델이 다르면 흔들림이 아니다)
     let flicker = null;
-    if (state.lastAI && state.lastAI.ai.length === total) {
+    const last = state[cfg.lastKey];
+    if (last && last.ai.length === total) {
       let compared = 0;
       let changed = 0;
       let otherModel = 0;
       ai.forEach((r, i) => {
-        const prev = state.lastAI.ai[i];
+        const prev = last.ai[i];
         if (r.error || !prev || prev.error) return;
-        if (usedModel[i] !== state.lastAI.usedModel[i]) { otherModel += 1; return; }
+        if (usedModel[i] !== last.usedModel[i]) { otherModel += 1; return; }
         compared += 1;
         if (DIMS.some((d) => r[d] !== prev[d])) changed += 1;
       });
       flicker = { compared, changed, otherModel };
     }
-    state.lastAI = { ai, usedModel };
+    state[cfg.lastKey] = { ai, usedModel };
 
     const measuredAt = new Date();
     const conditions = {
       판정: `AI — Gemini, 서버 함수 ${AI_URL}`,
       모델: modelSummary,
       기준: `criteria.json version ${state.criteria.version}`,
-      정답: `data/answer.json ${total}문장`,
-      보낸_방식: `가린 문장만, ${batches.length}번에 나눠 보냄 (${batches.map((b) => b.length).join(' · ')}문장)`,
+      정답: `${cfg.file} ${total}문장` + (cfg.showLabelBy ? ` (정답 붙인 쪽: ${labelByText(items)})` : ''),
+      보낸_방식: batches.length === 1
+        ? `가린 문장만, 한 번에 보냄 (${total}문장)`
+        : `가린 문장만, ${batches.length}번에 나눠 보냄 (${batches.map((b) => b.length).join(' · ')}문장)`,
       답_못_받은_문장: `${failed}개 (오답으로 셈)`,
       잰_때: measuredAt.toLocaleString('ko-KR'),
     };
@@ -510,10 +545,10 @@ async function onGradeAI() {
     };
 
     const dlBtn = el('button', { type: 'button', class: 'primary alt' }, 'AI 채점 결과 내려받기');
-    dlBtn.addEventListener('click', () => downloadJSON(report, DOWNLOAD_NAME));
+    dlBtn.addEventListener('click', () => downloadJSON(report, cfg.downloadName));
 
     out.replaceChildren(...[
-      el('h2', { class: 'block-head' }, 'AI 채점 — 규칙과 나란히'),
+      el('h2', { class: 'block-head' }, cfg.title),
       el('div', { class: 'card table-card' },
         el('table', { class: 'compare' },
           el('thead', {}, el('tr', {},
@@ -537,7 +572,7 @@ async function onGradeAI() {
           el('li', {}, flicker
             ? `두 번 잰 흔들림: 직전 AI 채점과 같은 모델로 견준 ${flicker.compared}문장 중 판정이 달라진 문장 ${flicker.changed}개`
               + (flicker.otherModel ? ` (모델이 달라 뺀 문장 ${flicker.otherModel}개)` : '')
-            : '두 번 잰 흔들림: 한 번 더 «AI로 채점»을 누르면 직전 결과와 견줘 셉니다'))),
+            : `두 번 잰 흔들림: 한 번 더 «${cfg.btnText}»을 누르면 직전 결과와 견줘 셉니다`))),
       dlBtn,
       el('h3', { class: 'wrong-head' }, `AI가 틀린 문장 ${wrongs.length}개 (정답 → 판정)`),
       ...wrongCards(wrongs),
@@ -552,7 +587,7 @@ async function onGradeAI() {
     setGradeButtons(true);
     renderPicker(false);
     $('ai-pause').hidden = true;
-    btn.textContent = 'AI로 채점';
+    btn.textContent = cfg.btnText;
   }
 }
 
@@ -563,6 +598,7 @@ async function init() {
   $('classify-form').addEventListener('submit', onClassify);
   $('grade-btn').addEventListener('click', onGrade);
   $('ai-grade-btn').addEventListener('click', onGradeAI);
+  $('fresh-grade-btn').addEventListener('click', onGradeFresh);
 
   try {
     [state.criteria, state.keywords] = await Promise.all([

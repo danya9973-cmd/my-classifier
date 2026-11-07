@@ -344,3 +344,8 @@ table.compare td.down { color: var(--danger); font-weight: 700; }
   line-height: 1.4;
 }
 .alert::before { content: "⚠"; font-size: 1.1rem; line-height: 1.25; }
+
+/* 새 문장(fresh.json) 채점 */
+.fresh-hint { margin: 14px 0 8px; }
+.primary.fresh { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+#fresh-grade-result > .primary { margin-bottom: 4px; }

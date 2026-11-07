@@ -44,10 +44,13 @@
           <button type="button" class="primary" id="grade-btn" disabled>규칙으로 채점</button>
           <button type="button" class="primary alt" id="ai-grade-btn" disabled>AI로 채점</button>
         </div>
+        <p class="hint fresh-hint">새 문장(data/fresh.json)은 따로 잽니다 — 규칙과 AI를 한 번에 재서 나란히 보여 줍니다. 이 문장들의 정답은 AI가 붙였습니다.</p>
+        <button type="button" class="primary fresh" id="fresh-grade-btn" disabled>새 문장(fresh) 채점 — 규칙 · AI</button>
         <p id="ai-progress" class="progress" hidden aria-live="polite"></p>
         <div id="ai-pause" class="pause" hidden></div>
       </div>
       <div id="ai-grade-result" hidden></div>
+      <div id="fresh-grade-result" hidden></div>
       <div id="grade-result" hidden aria-live="polite"></div>
     </section>
   </main>
