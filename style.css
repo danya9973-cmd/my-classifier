@@ -276,3 +276,55 @@ table.compare td.down { color: var(--danger); font-weight: 700; }
 .fail-list { margin: 0 0 12px; padding-left: 18px; font-size: 0.85rem; color: var(--muted); }
 .wrong .chip.fail { background: var(--warn-bg); color: var(--warn); }
 #ai-grade-result > .primary { margin-bottom: 4px; }
+
+/* 모델 고르기 */
+.model-card .label { margin: 0 0 10px; }
+.model-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.model-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 52px;
+  padding: 8px 10px;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.model-btn .m-name { font-weight: 700; font-size: 0.95rem; }
+.model-btn .m-desc { font-size: 0.75rem; color: var(--muted); }
+.model-btn[aria-checked="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--surface);
+}
+.model-btn[aria-checked="true"] .m-name::before { content: "● "; color: var(--accent); }
+.model-btn.busy .m-desc { color: var(--warn); font-weight: 600; }
+.model-btn:disabled { opacity: 0.55; cursor: default; }
+.model-btn:focus-visible, .switch-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.model-note { margin: 10px 0 0; font-size: 0.8rem; }
+
+/* 붐빌 때 다른 모델로 */
+.switch-head { margin: 4px 0 8px; font-weight: 600; font-size: 0.92rem; }
+.switch-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.switch-btn {
+  min-height: 44px;
+  padding: 8px 14px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent-text);
+  background: var(--accent);
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.switch-btn.stop { background: transparent; color: var(--muted); border: 1px solid var(--border); width: 100%; }
+.pause { margin-top: 12px; }

@@ -8,9 +8,15 @@ const AI_URL = '/api/classify';
 const AI_CLIENT_TIMEOUT_MS = 75000; // 서버 함수가 Gemini 를 60초까지 기다리므로 그보다 조금 길게
 const AI_BATCHES = 4;               // 채점할 때 문장을 몇 번에 나눠 보낼지
 const DOWNLOAD_NAME = 'ai_채점결과.json';
+const MODEL_KEY = 'my-classifier:model'; // 고른 모델을 이 브라우저에만 기억한다
 
 const $ = (id) => document.getElementById(id);
-const state = { criteria: null, keywords: null, answer: null, lastAI: null };
+const state = {
+  criteria: null, keywords: null, answer: null, lastAI: null,
+  models: [],          // [{id, 이름, 설명}]
+  model: null,         // 지금 고른 모델 id
+  busy: new Map(),     // 붐빈다고 답한 모델 id → 시각 (화면에 «붐빔» 표시)
+};
 
 async function loadJSON(path) {
   const res = await fetch(path, { cache: 'no-store' });
@@ -62,8 +68,69 @@ function pct(n, total) {
   return `${((n / total) * 100).toFixed(1)}%`;
 }
 
+/* ---------- 모델 고르기 ---------- */
+async function loadModels() {
+  // 서버 함수가 있으면 서버 목록(GEMINI_MODEL 반영)을, 없으면 models.json 을 쓴다
+  let list = null;
+  let def = null;
+  try {
+    const res = await fetch(AI_URL, { cache: 'no-store' });
+    const d = await res.json();
+    if (res.ok && Array.isArray(d.models) && d.models.length) { list = d.models; def = d.default; }
+  } catch { /* 서버 함수 없음 */ }
+  if (!list) {
+    const cfg = await loadJSON('models.json');
+    list = cfg.모델;
+    def = cfg.기본;
+  }
+  state.models = list;
+  let saved = null;
+  try { saved = localStorage.getItem(MODEL_KEY); } catch { /* 저장소 막힘 */ }
+  const ids = list.map((m) => m.id);
+  state.model = ids.includes(saved) ? saved : ids.includes(def) ? def : ids[0];
+  renderPicker();
+}
+
+function modelName(id) {
+  return state.models.find((m) => m.id === id)?.이름 ?? id;
+}
+
+function selectModel(id) {
+  state.model = id;
+  try { localStorage.setItem(MODEL_KEY, id); } catch { /* 저장소 막힘 */ }
+  renderPicker();
+}
+
+function renderPicker(disabled = false) {
+  const box = $('model-picker');
+  box.replaceChildren(...state.models.map((m) => {
+    const on = m.id === state.model;
+    const b = el('button', {
+      type: 'button', role: 'radio', class: 'model-btn',
+      'aria-checked': String(on), 'data-id': m.id, title: m.id,
+    },
+    el('span', { class: 'm-name' }, m.이름),
+    el('span', { class: 'm-desc' }, state.busy.has(m.id) ? '방금 붐빔' : m.설명));
+    if (state.busy.has(m.id)) b.classList.add('busy');
+    b.disabled = disabled;
+    b.addEventListener('click', () => selectModel(m.id));
+    return b;
+  }));
+  $('model-note').textContent = `지금 고른 모델: ${state.model}`;
+}
+
+// 붐빈 모델 말고 다른 모델 버튼들 — 누르면 그 모델을 고르고 onPick(id)
+function otherModelButtons(failedId, onPick) {
+  return el('div', { class: 'switch-row' },
+    state.models.filter((m) => m.id !== failedId).map((m) => {
+      const b = el('button', { type: 'button', class: 'switch-btn' }, `${m.이름}로`);
+      b.addEventListener('click', () => { selectModel(m.id); onPick(m.id); });
+      return b;
+    }));
+}
+
 /* ---------- AI 부르기 ---------- */
-async function askAI(sentences) {
+async function askAI(sentences, model) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), AI_CLIENT_TIMEOUT_MS);
   let res;
@@ -71,7 +138,7 @@ async function askAI(sentences) {
     res = await fetch(AI_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sentences }),
+      body: JSON.stringify({ sentences, model }),
       signal: ctrl.signal,
     });
   } catch (err) {
@@ -81,6 +148,8 @@ async function askAI(sentences) {
       error: err.name === 'AbortError'
         ? `서버 함수가 ${AI_CLIENT_TIMEOUT_MS / 1000}초 안에 답하지 않았습니다`
         : `서버 함수에 닿지 못했습니다 (${err.message})`,
+      busy: err.name === 'AbortError',
+      model,
     };
   }
   clearTimeout(timer);
@@ -90,8 +159,10 @@ async function askAI(sentences) {
     return { ok: false, error: `서버 함수가 없거나 알 수 없는 답을 했습니다 (HTTP ${res.status})` };
   }
   if (!res.ok || !data.ok) {
-    return { ok: false, model: data.model, error: data.error || `HTTP ${res.status}` };
+    if (data.busy) state.busy.set(model, Date.now());
+    return { ok: false, model: data.model ?? model, error: data.error || `HTTP ${res.status}`, busy: !!data.busy };
   }
+  state.busy.delete(model);
   return data;
 }
 
@@ -154,9 +225,11 @@ async function onClassify(e) {
   const waiting = el('p', { class: 'progress' }, 'AI가 가르는 중…');
   box.append(waiting);
   btn.disabled = true;
-  const ai = await askAI([text]); // 가린 문장만 보낸다
+  const model = state.model;
+  const ai = await askAI([text], model); // 가린 문장만 보낸다
   btn.disabled = false;
   waiting.remove();
+  renderPicker();
 
   const one = ai.ok ? ai.results?.[0] : null;
   if (one && !one.error) {
@@ -165,8 +238,14 @@ async function onClassify(e) {
   } else {
     box.append(
       el('p', { class: 'notice' }, 'AI 없이 규칙으로 갈랐습니다'),
-      el('p', { class: 'note-small fail-reason' }, `AI 실패 이유: ${one?.error || ai.error}`),
+      el('p', { class: 'note-small fail-reason' }, `AI 실패 이유 (${model}): ${one?.error || ai.error}`),
     );
+    if (ai.busy) {
+      box.append(
+        el('p', { class: 'switch-head' }, `${modelName(model)} 모델이 붐빕니다. 다른 모델로 다시 가르기:`),
+        otherModelButtons(model, () => $('classify-form').requestSubmit()),
+      );
+    }
     appendVerdict(box, ruleVerdict(rule));
   }
 }
@@ -264,6 +343,25 @@ function setGradeButtons(enabled) {
   $('ai-grade-btn').disabled = !enabled;
 }
 
+// AI 채점 중 모델이 붐비면 멈추고 고르게 한다 → 고른 모델 id, 또는 null(여기서 끝내기)
+function askToSwitch(failedId, error, done, total) {
+  const box = $('ai-pause');
+  return new Promise((resolve) => {
+    const finish = (v) => { box.hidden = true; box.replaceChildren(); resolve(v); };
+    const stop = el('button', { type: 'button', class: 'switch-btn stop' }, '여기서 끝내기');
+    stop.addEventListener('click', () => finish(null));
+    box.replaceChildren(
+      el('p', { class: 'notice' }, `${done}/${total}에서 멈췄습니다 — ${modelName(failedId)} 모델이 붐빕니다`),
+      el('p', { class: 'note-small fail-reason' }, error),
+      el('p', { class: 'switch-head' }, '다른 모델로 이어서 하기:'),
+      otherModelButtons(failedId, (id) => finish(id)),
+      el('p', { class: 'note-small' }, '«여기서 끝내기»를 누르면 남은 문장은 답 못 받은 문장(오답)으로 셉니다.'),
+      stop,
+    );
+    box.hidden = false;
+  });
+}
+
 function downloadJSON(obj, filename) {
   const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -287,20 +385,43 @@ async function onGradeAI() {
     const masked = items.map((it) => maskText(it.text).text);
     const batches = splitInto(items.map((_, i) => i), AI_BATCHES);
     const ai = new Array(total);
-    let model = null;
+    const usedModel = new Array(total); // 문장마다 어느 모델이 갈랐는지
+    let model = state.model;
     let done = 0;
-    progress.textContent = `AI 채점 중… ${done}/${total}`;
+    let stopped = null; // 여기서 끝내기를 눌렀을 때의 이유
+    let stoppedAt = 0;  // 그때까지 보낸 문장 수
+    renderPicker(true); // 채점 중에는 위의 모델 버튼을 잠근다 (멈췄을 때만 고른다)
+    progress.textContent = `AI 채점 중… ${done}/${total} (${modelName(model)})`;
 
     for (const batch of batches) {
-      const res = await askAI(batch.map((i) => masked[i])); // 가린 문장만 보낸다
-      if (res.model) model = res.model;
+      let res;
+      if (stopped) {
+        res = { ok: false, error: stopped };
+      } else {
+        for (;;) {
+          res = await askAI(batch.map((i) => masked[i]), model); // 가린 문장만 보낸다
+          if (res.ok || !res.busy) break;
+          renderPicker(true);
+          const next = await askToSwitch(model, res.error, done, total);
+          if (!next) { stopped = `채점을 멈춤 (${model} 붐빔)`; stoppedAt = done; break; }
+          model = next;
+          renderPicker(true);
+          progress.textContent = `AI 채점 중… ${done}/${total} (${modelName(model)})`;
+        }
+      }
       batch.forEach((idx, k) => {
         const r = res.ok ? res.results?.[k] : null;
         ai[idx] = r && !r.error ? r : { error: (r && r.error) || res.error || '답이 없습니다' };
+        usedModel[idx] = res.ok || !stopped ? (res.model ?? model) : null;
       });
       done += batch.length;
-      progress.textContent = `AI 채점 중… ${done}/${total}`;
+      progress.textContent = `AI 채점 중… ${done}/${total} (${modelName(model)})`;
     }
+    const modelCount = new Map();
+    usedModel.forEach((m, i) => { if (m && !ai[i].error) modelCount.set(m, (modelCount.get(m) || 0) + 1); });
+    const modelSummary = modelCount.size
+      ? [...modelCount].map(([m, n]) => `${m} ${n}문장`).join(' · ')
+      : '없음 (답을 받은 문장 없음)';
 
     // AI 집계 — 답을 못 받은 문장은 오답으로 센다
     const correct = Object.fromEntries(DIMS.map((d) => [d, 0]));
@@ -324,24 +445,28 @@ async function onGradeAI() {
 
     const rule = gradeRules(items);
 
-    // 두 번 잰 흔들림 — 직전 AI 채점과 판정이 달라진 문장 (둘 다 답을 받은 문장만)
+    // 두 번 잰 흔들림 — 직전 AI 채점과 판정이 달라진 문장
+    // (둘 다 답을 받았고, 같은 모델이 가른 문장만 견준다 — 모델이 다르면 흔들림이 아니다)
     let flicker = null;
-    if (state.lastAI && state.lastAI.length === total) {
+    if (state.lastAI && state.lastAI.ai.length === total) {
       let compared = 0;
       let changed = 0;
+      let otherModel = 0;
       ai.forEach((r, i) => {
-        const prev = state.lastAI[i];
+        const prev = state.lastAI.ai[i];
         if (r.error || !prev || prev.error) return;
+        if (usedModel[i] !== state.lastAI.usedModel[i]) { otherModel += 1; return; }
         compared += 1;
         if (DIMS.some((d) => r[d] !== prev[d])) changed += 1;
       });
-      flicker = { compared, changed };
+      flicker = { compared, changed, otherModel };
     }
-    state.lastAI = ai;
+    state.lastAI = { ai, usedModel };
 
     const measuredAt = new Date();
     const conditions = {
-      판정: `AI — Gemini (${model ?? '알 수 없음'}), 서버 함수 ${AI_URL}`,
+      판정: `AI — Gemini, 서버 함수 ${AI_URL}`,
+      모델: modelSummary,
       기준: `criteria.json version ${state.criteria.version}`,
       정답: `data/answer.json ${total}문장`,
       보낸_방식: `가린 문장만, ${batches.length}번에 나눠 보냄 (${batches.map((b) => b.length).join(' · ')}문장)`,
@@ -359,15 +484,16 @@ async function onGradeAI() {
     };
 
     const report = {
-      잰_조건: { ...conditions, 모델: model, 잰_때: measuredAt.toISOString() },
+      잰_조건: { ...conditions, 모델별_문장_수: Object.fromEntries(modelCount), 잰_때: measuredAt.toISOString() },
       요약: {
         AI: { ...Object.fromEntries(DIMS.map((d) => [d, correct[d]])), 세_항목_모두: allThree, 답_못_받음: failed, 문장_수: total },
         규칙: { ...Object.fromEntries(DIMS.map((d) => [d, rule.correct[d]])), 세_항목_모두: rule.allThree, 문장_수: total },
       },
-      두_번_잰_흔들림: flicker ? { 직전_AI_채점과_비교한_문장: flicker.compared, 판정이_달라진_문장: flicker.changed } : null,
+      두_번_잰_흔들림: flicker ? { 직전_AI_채점과_비교한_문장: flicker.compared, 판정이_달라진_문장: flicker.changed, 모델이_달라_빼고_센_문장: flicker.otherModel } : null,
       문장별: items.map((item, i) => ({
         id: item.id,
         가린_문장: masked[i],
+        모델: usedModel[i],
         정답: Object.fromEntries(DIMS.map((d) => [d, item[d]])),
         AI: ai[i].error ? { error: ai[i].error } : { ...Object.fromEntries(DIMS.map((d) => [d, ai[i][d]])), 이유: ai[i].이유 },
         규칙: Object.fromEntries(DIMS.map((d) => [d, rule.perItem[i].judged[d]])),
@@ -401,20 +527,23 @@ async function onGradeAI() {
         el('ul', {},
           Object.entries(conditions).map(([k, v]) => el('li', {}, `${k.replaceAll('_', ' ')}: ${v}`)),
           el('li', {}, flicker
-            ? `두 번 잰 흔들림: 직전 AI 채점과 견준 ${flicker.compared}문장 중 판정이 달라진 문장 ${flicker.changed}개`
+            ? `두 번 잰 흔들림: 직전 AI 채점과 같은 모델로 견준 ${flicker.compared}문장 중 판정이 달라진 문장 ${flicker.changed}개`
+              + (flicker.otherModel ? ` (모델이 달라 뺀 문장 ${flicker.otherModel}개)` : '')
             : '두 번 잰 흔들림: 한 번 더 «AI로 채점»을 누르면 직전 결과와 견줘 셉니다'))),
       dlBtn,
       el('h3', { class: 'wrong-head' }, `AI가 틀린 문장 ${wrongs.length}개 (정답 → 판정)`),
       ...wrongCards(wrongs),
     ].filter(Boolean));
     out.hidden = false;
-    progress.textContent = `AI 채점 끝 — ${done}/${total}`;
+    progress.textContent = stopped ? `AI 채점을 멈췄습니다 — ${stoppedAt}/${total}에서` : `AI 채점 끝 — ${done}/${total}`;
   } catch (err) {
     out.replaceChildren(el('p', { class: 'error' }, err.message));
     out.hidden = false;
     progress.hidden = true;
   } finally {
     setGradeButtons(true);
+    renderPicker(false);
+    $('ai-pause').hidden = true;
     btn.textContent = 'AI로 채점';
   }
 }
@@ -439,6 +568,12 @@ async function init() {
     $('load-error').textContent = msg;
     $('load-error').hidden = false;
     return;
+  }
+
+  try {
+    await loadModels();
+  } catch (err) {
+    $('model-note').textContent = `모델 목록을 읽지 못했습니다: ${err.message}`;
   }
 
   $('classify-btn').disabled = false;

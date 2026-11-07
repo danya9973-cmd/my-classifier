@@ -1,13 +1,16 @@
 """Vercel 서버 함수 — 가린 문장 여러 개를 criteria.json 기준과 함께 Gemini 에 보내 가른다.
 
 - 열쇠는 환경 변수 GEMINI_API_KEY 에서만 읽는다. 코드와 폴더에는 두지 않는다.
-- 모델은 환경 변수 GEMINI_MODEL, 비어 있으면 DEFAULT_MODEL.
+- 모델은 화면에서 고른 것(models.json 목록 안에서만). 고르지 않았으면 환경 변수 GEMINI_MODEL,
+  그것도 비어 있으면 models.json 의 기본.
 - 받은 문장과 열쇠는 로그에 남기지 않는다. 문장을 저장하지 않는다.
 - 파이썬 표준 라이브러리만 쓴다.
 
-요청:  POST /api/classify   {"sentences": ["가린 문장", ...]}
+요청:  POST /api/classify   {"sentences": ["가린 문장", ...], "model": "고른 모델 (없어도 됨)"}
 응답:  {"ok": true,  "model": "...", "results": [{"칸","긴급도","감정","이유"} 또는 {"error"}, ...]}
-       {"ok": false, "model": "...", "error": "실패 이유"}
+       {"ok": false, "model": "...", "error": "실패 이유", "busy": true/false}
+       busy=true 는 그 모델이 붐비거나 한도를 넘은 것 — 다른 모델로 하면 될 수 있다.
+       GET  /api/classify   {"default": "...", "models": [...]}  고를 수 있는 모델 목록
 """
 
 import json
@@ -23,17 +26,36 @@ TIMEOUT_SECONDS = 60
 MAX_SENTENCES = 20      # 한 번에 받는 문장 수 상한 (채점은 35문장을 4번에 나눠 보내므로 9개씩)
 MAX_CHARS = 1000        # 문장 하나 길이 상한 (열쇠 사용량이 한 요청으로 크게 새지 않게)
 CRITERIA_PATH = Path(__file__).resolve().parent.parent / "criteria.json"
+MODELS_PATH = Path(__file__).resolve().parent.parent / "models.json"
+BUSY_STATUS = {429, 500, 502, 503, 504}  # 다른 모델로 바꾸면 될 수 있는 오류
 API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 DIMS = ["칸", "긴급도", "감정"]
 FIELD = {"칸": "category", "긴급도": "urgency", "감정": "sentiment"}  # Gemini 와 주고받을 때만 쓰는 영문 이름
 
 
 class GeminiError(Exception):
-    pass
+    status = None
+    busy = False
 
 
 def load_criteria():
     return json.loads(CRITERIA_PATH.read_text(encoding="utf-8"))
+
+
+def model_options():
+    """(기본 모델, 고를 수 있는 모델 목록). GEMINI_MODEL 이 있으면 그것이 기본이고 목록에도 넣는다."""
+    try:
+        cfg = json.loads(MODELS_PATH.read_text(encoding="utf-8"))
+        models = [m for m in cfg.get("모델", []) if isinstance(m, dict) and m.get("id")]
+        default = cfg.get("기본") or DEFAULT_MODEL
+    except Exception:
+        models, default = [], DEFAULT_MODEL
+    env = os.environ.get("GEMINI_MODEL", "").strip()
+    if env:
+        default = env
+    if default not in [m["id"] for m in models]:
+        models.insert(0, {"id": default, "이름": default, "설명": "서버 기본값"})
+    return default, models
 
 
 def labels_of(criteria):
@@ -109,7 +131,7 @@ def call_gemini(key, model, payload):
         if e.code in (401, 403):
             reason = "열쇠(GEMINI_API_KEY)가 틀렸거나 권한이 없습니다"
         elif e.code == 404:
-            reason = f"모델 '{model}'을 찾지 못했습니다. GEMINI_MODEL 을 확인하세요"
+            reason = f"모델 '{model}'을 찾지 못했습니다. models.json 이나 GEMINI_MODEL 을 확인하세요"
         elif e.code == 429:
             reason = "Gemini 사용 한도를 넘었습니다. 잠시 뒤 다시 해 보세요"
         elif e.code >= 500:
@@ -118,13 +140,20 @@ def call_gemini(key, model, payload):
             reason = "Gemini 가 요청을 받지 않았습니다"
         err = GeminiError(f"{reason} (HTTP {e.code}{': ' + detail[:200] if detail else ''})")
         err.status = e.code
+        err.busy = e.code in BUSY_STATUS
         raise err
     except (socket.timeout, TimeoutError):
-        raise GeminiError(f"Gemini 가 {TIMEOUT_SECONDS}초 안에 답하지 않았습니다")
+        raise timeout_error()
     except urllib.error.URLError as e:
         if isinstance(e.reason, (socket.timeout, TimeoutError)):
-            raise GeminiError(f"Gemini 가 {TIMEOUT_SECONDS}초 안에 답하지 않았습니다")
+            raise timeout_error()
         raise GeminiError(f"Gemini 에 연결하지 못했습니다 ({e.reason})")
+
+
+def timeout_error():
+    err = GeminiError(f"Gemini 가 {TIMEOUT_SECONDS}초 안에 답하지 않았습니다")
+    err.busy = True
+    return err
 
 
 def read_answer(data):
@@ -185,14 +214,23 @@ def classify(key, model, criteria, sentences):
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        model = os.environ.get("GEMINI_MODEL", "").strip() or DEFAULT_MODEL
+        default, models = model_options()
+        model = default
         try:
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
         except Exception:
             return self._send(400, {"ok": False, "model": model, "error": "요청을 JSON 으로 읽지 못했습니다"})
+        if not isinstance(body, dict):
+            body = {}
 
-        sentences = body.get("sentences") if isinstance(body, dict) else None
+        asked = body.get("model")
+        if asked not in (None, ""):
+            if asked not in [m["id"] for m in models]:
+                return self._send(400, {"ok": False, "model": str(asked)[:60], "error": "고를 수 없는 모델입니다 (models.json 목록에 없음)"})
+            model = asked
+
+        sentences = body.get("sentences")
         if not isinstance(sentences, list) or not sentences or not all(isinstance(s, str) for s in sentences):
             return self._send(400, {"ok": False, "model": model, "error": "sentences 에 문장 목록을 넣어 주세요"})
         if len(sentences) > MAX_SENTENCES:
@@ -211,13 +249,14 @@ class handler(BaseHTTPRequestHandler):
         try:
             results = classify(key, model, criteria, sentences)
         except GeminiError as e:
-            return self._send(502, {"ok": False, "model": model, "error": str(e)})
+            return self._send(502, {"ok": False, "model": model, "error": str(e), "busy": e.busy})
         except Exception as e:
             return self._send(500, {"ok": False, "model": model, "error": f"서버 함수 오류 ({type(e).__name__})"})
         return self._send(200, {"ok": True, "model": model, "results": results})
 
     def do_GET(self):
-        self._send(405, {"ok": False, "error": "POST 로 보내 주세요"})
+        default, models = model_options()
+        self._send(200, {"ok": True, "default": default, "models": models})
 
     def _send(self, status, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")

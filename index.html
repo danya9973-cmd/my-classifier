@@ -21,6 +21,12 @@
   <main>
     <p id="load-error" class="error" hidden></p>
 
+    <section class="card model-card" aria-labelledby="model-label">
+      <p id="model-label" class="label">AI 모델</p>
+      <div id="model-picker" class="model-picker" role="radiogroup" aria-labelledby="model-label"></div>
+      <p id="model-note" class="hint model-note">모델 목록을 읽는 중…</p>
+    </section>
+
     <section id="panel-classify" role="tabpanel" aria-labelledby="tab-classify">
       <form id="classify-form" class="card">
         <label for="sentence" class="label">고객 문장 한 줄</label>
@@ -39,6 +45,7 @@
           <button type="button" class="primary alt" id="ai-grade-btn" disabled>AI로 채점</button>
         </div>
         <p id="ai-progress" class="progress" hidden aria-live="polite"></p>
+        <div id="ai-pause" class="pause" hidden></div>
       </div>
       <div id="ai-grade-result" hidden></div>
       <div id="grade-result" hidden aria-live="polite"></div>
